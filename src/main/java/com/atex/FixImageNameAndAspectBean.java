@@ -27,11 +27,12 @@ import java.util.logging.FileHandler;
 import java.util.logging.Logger;
 import java.util.logging.SimpleFormatter;
 
-public class ChangeAspectBeanType {
+public class FixImageNameAndAspectBean {
 
+  public static final String ATEX_ONECMS_IMAGE = "atex.onecms.image";
   public static final String BEAN_SOURCE_TYPE = "com.atex.onecms.app.dam.standard.aspects.OneImageBean";
   public static final String BEAN_DEST_TYPE = "com.atex.onecms.app.dam.standard.aspects.CustomImageBean";
-  public static final String ATEX_ONECMS_IMAGE = "atex.onecms.image";
+
   // Input values
   private static String cbAddress;
   private static String cbBucket;
@@ -44,7 +45,7 @@ public class ChangeAspectBeanType {
 
   private static int maxConverted = 0;
 
-  private static Logger log = Logger.getLogger("Cleanup");
+  private static Logger log = Logger.getLogger("FixImageNameAndAspectBean");
 
   private static volatile Map<String, Long> totals = new TreeMap<>();
 
@@ -56,8 +57,6 @@ public class ChangeAspectBeanType {
   private static volatile int converted = 0;
   private static volatile int removed = 0;
 
-  private static final Set<String> deletedKeys = Collections.synchronizedSet(new HashSet<>());
-  private static final Set<String> convertedKeys  = Collections.synchronizedSet(new HashSet<>());
   private static int limit = -1;
   private static int skip = -1;
   private static volatile AtomicInteger lastPercentage = new AtomicInteger();
@@ -88,17 +87,9 @@ public class ChangeAspectBeanType {
     return response;
   }
 
-  private static boolean alreadyConverted(String id) {
-    synchronized (convertedKeys) {
-      if (convertedKeys.contains(id)) return true;
-      convertedKeys.add(id);
-      return false;
-    }
-  }
-
   private static void execute() throws Exception {
 
-    String filename = "change-aspect-bean-type-" + new Date().getTime() + ".log";
+    String filename = "fix-image-name-and-aspect-bean-" + new Date().getTime() + ".log";
     FileHandler fileHandler = new FileHandler(filename);
     SimpleFormatter simple = new SimpleFormatter();
     fileHandler.setFormatter(simple);
@@ -146,7 +137,9 @@ public class ChangeAspectBeanType {
       log.warning("Process Interrupted: "+e.getMessage());
     } finally {
       if (bucket != null) bucket.close();
+      if (rescueBucket != null) rescueBucket.close();
       if (cluster != null) cluster.disconnect();
+      if (rescueCluster != null) rescueCluster.disconnect();
     }
 
     log.info ("Finished @ " + new Date());
@@ -202,19 +195,18 @@ public class ChangeAspectBeanType {
     executor.shutdown();
     executor.awaitTermination(Long.MAX_VALUE, TimeUnit.NANOSECONDS);
 
-    log.info("Found "+onecmsAspects.size()+" hangers");
-    for (String hangerId : onecmsAspects.keySet()) {
-      String aspectId = onecmsAspects.get(hangerId);
-      JsonDocument aspect = getItem(aspectId);
-      JsonObject data = aspect.content().getObject("data");
-      if (data != null) data.put("_type", BEAN_DEST_TYPE);
-      List<JsonDocument> updates = new ArrayList<>();
-      updates.add(aspect);
-      log.info("hangerId = "+hangerId);
-      log.info("aspectId = "+aspectId);
-      if (!dryRun) sendUpdates(updates);
-      if (rescueBucket != null) sendToRescue(new ArrayList<>(onecmsAspects.values()));
-    }
+//    log.info("Found "+onecmsAspects.size()+" hangers");
+//    for (String hangerId : onecmsAspects.keySet()) {
+//      String aspectId = onecmsAspects.get(hangerId);
+//      JsonDocument aspect = getItem(aspectId);
+//      JsonObject data = aspect.content().getObject("data");
+//      if (data != null) data.put("_type", BEAN_DEST_TYPE);
+//      List<JsonDocument> updates = new ArrayList<>();
+//      updates.add(aspect);
+//      log.info("hangerId = "+hangerId+" aspectId = "+aspectId);
+//      if (!dryRun) sendUpdates(updates);
+//      if (rescueBucket != null) sendToRescue(new ArrayList<>(onecmsAspects.values()));
+//    }
 
     showStatistics();
   }
@@ -251,21 +243,105 @@ public class ChangeAspectBeanType {
       if (hanger != null && hanger.content() != null) {
         JsonObject aspects = hanger.content().getObject("aspectLocations");
         String aspectContentId = aspects.getString(ATEX_ONECMS_IMAGE);
-        if (aspectContentId!=null && !alreadyConverted(aspectContentId)) {
+        if (aspectContentId!=null) {
           String aspectId = getAspectIdFromContentId(aspectContentId);
 
           JsonDocument aspect = getItem(aspectId);
+          boolean beanUpdate = false;
+          boolean nameUpdate = false;
           if (aspect != null && aspect.content().getString("name").equalsIgnoreCase(ATEX_ONECMS_IMAGE)) {
             JsonObject data = aspect.content().getObject("data");
             if (data != null && data.getString("_type").equals(BEAN_SOURCE_TYPE)) {
+              beanUpdate = true;
+            }
+            if (data != null && data.getString("name") != null &&
+                data.getString("name").length() == 0) {
+              log.info("Processing empty name, hanger="+itemId+" image aspect="+aspectId);
+              String imageMetaDataContentId = aspects.getString("atex.ImageMetadata");
+              String filesContentId = aspects.getString("atex.Files");
+              String imageMetadataAspectId = getAspectIdFromContentId(imageMetaDataContentId);
+              JsonDocument imageMetadata = getItem(imageMetadataAspectId);
 
-              accumlateTotals("Doc. Type " + aspect.content().getObject("data").getString("_type"));
-              onecmsAspects.put(itemId, aspectId);
-              converted++;
+              String imageFilename = "";
+
+              try {
+                imageFilename = imageMetadata.content().getObject("data").getObject("tags").getObject("File").getString("FileName");
+                if (imageFilename.length() > 0) {
+                  log.info("Found filename from tags="+imageFilename);
+                }
+              } catch (NullPointerException e) {
+              }
+              if (imageFilename == null || imageFilename.length() == 0) {
+                try {
+                  String filesAspectId = getAspectIdFromContentId(filesContentId);
+                  JsonDocument filesMetadata = getItem(filesAspectId);
+
+                  Set<String> filesKeys = filesMetadata.content().getObject("data").getObject("files").getNames();
+                  for (String key : filesKeys) {
+                    if (key.equals("_type")) continue;
+                    imageFilename = key;
+                    log.info("Found image filename from files=" + imageFilename);
+                    break;
+                  }
+                } catch (NullPointerException e) {
+                }
+              }
+
+              if (imageFilename == null || imageFilename.length() ==0) {
+                log.warning("Unable to find filename for hanger id=" + itemId);
+              } else {
+                nameUpdate = true;
+              }
+
+              if (beanUpdate || nameUpdate) {
+                updates.add(aspect);
+
+                if (!dryRun) {
+                  if (rescueBucket != null) {
+                    sendToRescue(Arrays.asList(aspectId));
+                  }
+                  converted++;
+                  if (imageFilename != null && imageFilename.length() > 0) {
+                    data.put("name", imageFilename);
+                    log.info("Updated image, found hanger=" + itemId + " aspect=" + aspectId + " image filename=" + imageFilename);
+                    accumlateTotals("Fixed image filename of aspect of name=" + ATEX_ONECMS_IMAGE );
+                  }
+                  if (data.getString("_type").equals(BEAN_SOURCE_TYPE)) {
+                    data.put("_type", BEAN_DEST_TYPE);
+                    log.info("Updated image, found hanger=" + itemId + " aspect=" + aspectId + " bean name changed to=" + BEAN_DEST_TYPE);
+                    accumlateTotals("Converted from aspect of name=" + BEAN_SOURCE_TYPE + " was bean= " + data.getObject("content").getString("_type") + " converted to bean=" + BEAN_DEST_TYPE);
+                  }
+
+                  sendUpdates(updates);
+                } else {
+                  log.info("Dry run, found hanger=" + itemId + " aspect=" + aspectId + " image filename=" + imageFilename);
+                }
+              }
+
             }
           }
+//            }
+//          }
         }
       }
+    }
+
+    float percentage = (float) processed * 100 / total;
+    if (percentage >= lastPercentage.getAndSet((int) percentage) + 1) {
+      String out = String.format("%f", percentage);
+      long now = System.currentTimeMillis();
+      float duration = now - timeStarted;
+      long last = lastTime.getAndSet(now);
+      if (last != 0) {
+        duration = now - last;
+      }
+      // Duration of last 1%
+      float percentRemaining = 100 - percentage;
+      long timeRemaining = (long) (duration * percentRemaining);
+
+      long endTime = now + timeRemaining;
+      showStatistics();
+      log.info("=== HANGERS PROCESSED: " + processed + ", %age = " + out + ", ETA : " + new Date(endTime));
     }
 
     return false;
@@ -365,7 +441,7 @@ public class ChangeAspectBeanType {
                                        List<JsonDocument> updates) throws Exception {
     JsonObject aspects = hanger.content().getObject("aspectLocations");
     String aspectContentId = aspects.getString(sourceType);
-    if (aspectContentId!=null && !alreadyConverted(aspectContentId)) {
+    if (aspectContentId!=null) {
       String aspectId = getAspectIdFromContentId(aspectContentId);
 
       JsonDocument aspect = getItem(aspectId);
@@ -502,14 +578,11 @@ public class ChangeAspectBeanType {
 
       if (cmdLine.hasOption("maxConverted")) {
         maxConverted = Integer.parseInt(cmdLine.getOptionValue("maxConverted"));
-      } else {
-        throw new Exception();
       }
-
 
     } catch (Exception e) {
       e.printStackTrace();
-      formatter.printHelp("ChangeAspectType", options);
+      formatter.printHelp("FixImageNameAndAspectBean", options);
       System.exit(-99);
     }
 
