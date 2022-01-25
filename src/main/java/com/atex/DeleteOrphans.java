@@ -1,5 +1,27 @@
 package com.atex;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Date;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.NoSuchElementException;
+import java.util.Set;
+import java.util.TreeMap;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.FileHandler;
+import java.util.logging.Level;
+import java.util.logging.Logger;
+import java.util.logging.SimpleFormatter;
+
 import com.couchbase.client.core.BackpressureException;
 import com.couchbase.client.core.time.Delay;
 import com.couchbase.client.java.Bucket;
@@ -24,86 +46,64 @@ import org.apache.commons.cli.Options;
 import rx.Observable;
 import rx.functions.Func1;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Date;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.NoSuchElementException;
-import java.util.Set;
-import java.util.TreeMap;
-import java.util.concurrent.Executor;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.Semaphore;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.logging.FileHandler;
-import java.util.logging.Level;
-import java.util.logging.Logger;
-import java.util.logging.SimpleFormatter;
-
 public class DeleteOrphans {
 
-  public static final String NOSQL_IMAGE_TYPE = "com.atex.nosql.image.ImageContentDataBean";
-  public static final String ATEX_ONECMS_IMAGE = "atex.onecms.image";
-  public static final String ATEX_ONECMS_ARTICLE = "atex.onecms.article";
-  public static final String NOSQL_VIDEO_BEAN = "com.atex.nosql.video.VideoContentDataBean";
-  public static final String ATEX_DAM_VIDEO = "atex.dam.standard.Video";
-  private static final String NOSQL_ARTICLE_TYPE = "com.atex.nosql.article.ArticleBean";
-  private static final String ARTCLE_BEAN_EXTENDED = "com.atex.nosql.article.ArticleBeanExtended";
-  private static final String ATEX_REMOTE_TRACKER = "com.atex.nosql.RemoteContentTrackerBean";
-  private static final String ATEX_ONECMS = "atex.OneCMS";
-  public static final String CREATED_WITH_TEMPLATE = "createdWithTemplate";
+  protected static final String NOSQL_IMAGE_TYPE = "com.atex.nosql.image.ImageContentDataBean";
+  protected static final String ATEX_ONECMS_IMAGE = "atex.onecms.image";
+  protected static final String ATEX_ONECMS_ARTICLE = "atex.onecms.article";
+  protected static final String NOSQL_VIDEO_BEAN = "com.atex.nosql.video.VideoContentDataBean";
+  protected static final String ATEX_DAM_VIDEO = "atex.dam.standard.Video";
+  protected static final String NOSQL_ARTICLE_TYPE = "com.atex.nosql.article.ArticleBean";
+  protected static final String ARTCLE_BEAN_EXTENDED = "com.atex.nosql.article.ArticleBeanExtended";
+  protected static final String ATEX_REMOTE_TRACKER = "com.atex.nosql.RemoteContentTrackerBean";
+  protected static final String ATEX_ONECMS = "atex.OneCMS";
+  protected static final String CREATED_WITH_TEMPLATE = "createdWithTemplate";
   // Input values
-  private static String cbAddress;
-  private static String cbBucket;
-  private static String cbBucketPwd;
-  private static String design;
-  private static String view;
-  private static boolean devView = false;
-  private static boolean dryRun = false;
-  private static int batchSize = -1;
+  protected static String cbAddress;
+  protected static String cbBucket;
+  protected static String cbBucketPwd;
+  protected static String design;
+  protected static String view;
+  protected static boolean devView = false;
+  protected static boolean dryRun = false;
+  protected static int batchSize = -1;
 
-  private static String rescueCbAddress;
-  private static String rescueCbBucket;
-  private static String rescueCbBucketPwd;
+  protected static String rescueCbAddress;
+  protected static String rescueCbBucket;
+  protected static String rescueCbBucketPwd;
 
-  private static final String CONTENT_ID_PREFIX = "onecms:";
-  private static final String DELETION_PREFIX = "deletion:";
-  private static final String MUTATION_PREFIX = "mutation:";
+  protected static final String CONTENT_ID_PREFIX = "onecms:";
+  protected static final String DELETION_PREFIX = "deletion:";
+  protected static final String MUTATION_PREFIX = "mutation:";
 
-  private static Logger log = Logger.getLogger("Cleanup");
+  protected static Logger log = Logger.getLogger("Cleanup");
 
-  private static volatile Map<String, Long> totals = new TreeMap<>();
+  protected static volatile Map<String, Long> totals = new TreeMap<>();
 
-  private static Bucket bucket;
-  private static String startKey;
-  private static int numThreads = 8;
+  protected static Bucket bucket;
+  protected static String startKey;
+  protected static int numThreads = 8;
 
-  private static volatile int processed = 0;
-  private static volatile int converted = 0;
-  private static volatile int removed = 0;
+  protected static volatile int processed = 0;
+  protected static volatile int converted = 0;
+  protected static volatile int removed = 0;
 
-  private static final Set<String> deletedKeys = Collections.synchronizedSet(new HashSet<>());
-  private static final Set<String> convertedKeys  = Collections.synchronizedSet(new HashSet<>());
-  private static boolean fixData = false;
-  private static boolean tidyUp = false;
-  private static int limit = -1;
-  private static int skip = -1;
-  private static volatile AtomicInteger lastPercentage = new AtomicInteger();
-  private static volatile AtomicLong lastTime = new AtomicLong();
-  private static int total = 0;
-  private static long timeStarted = 0;
+  protected static final Set<String> deletedKeys = Collections.synchronizedSet(new HashSet<>());
+  protected static final Set<String> convertedKeys  = Collections.synchronizedSet(new HashSet<>());
+  protected static boolean fixData = false;
+  protected static boolean tidyUp = false;
+  protected static int limit = -1;
+  protected static int skip = -1;
+  protected static volatile AtomicInteger lastPercentage = new AtomicInteger();
+  protected static volatile AtomicLong lastTime = new AtomicLong();
+  protected static int total = 0;
+  protected static long timeStarted = 0;
 
-  private static Bucket rescueBucket;
-  private static boolean restore = false;
-  private static AtomicInteger restored = new AtomicInteger();
+  protected static Bucket rescueBucket;
+  protected static boolean restore = false;
+  protected static AtomicInteger restored = new AtomicInteger();
 
-  private static RawJsonDocument getDeletedItem(String id) {
+  protected static RawJsonDocument getDeletedItem(String id) {
     RawJsonDocument response = null;
     try {
       response = rescueBucket.get(id, RawJsonDocument.class);
@@ -113,7 +113,7 @@ public class DeleteOrphans {
     return response;
   }
 
-  private static void restoreRow(String id) {
+  protected static void restoreRow(String id) {
     RawJsonDocument doc = getDeletedItem(id);
     try {
       bucket.insert(doc);
@@ -145,7 +145,7 @@ public class DeleteOrphans {
 
   }
 
-  private static void restoreDeleted() throws InterruptedException {
+  protected static void restoreDeleted() throws InterruptedException {
     ViewQuery query = ViewQuery.from("deleted", "deleted");
     if (limit > 0) {
       query.limit(limit);
@@ -176,7 +176,7 @@ public class DeleteOrphans {
     executor.awaitTermination(Long.MAX_VALUE, TimeUnit.NANOSECONDS);
   }
 
-  private static void sendToRescue(List<String> keys) {
+  protected static void sendToRescue(List<String> keys) {
     Observable
         .from(keys)
         .flatMap(new Func1<String, Observable<RawJsonDocument>>() {
@@ -201,7 +201,7 @@ public class DeleteOrphans {
 
   }
 
-  private static JsonDocument getItem(String id) {
+  protected static JsonDocument getItem(String id) {
     JsonDocument response = null;
     try {
       response = bucket.get(id);
@@ -226,7 +226,7 @@ public class DeleteOrphans {
     return false;
   }
 
-  private static boolean alreadyDeleted(String id) {
+  protected static boolean alreadyDeleted(String id) {
     synchronized (deletedKeys) {
       if (deletedKeys.contains(id)) return true;
       deletedKeys.add(id);
@@ -234,7 +234,7 @@ public class DeleteOrphans {
     }
   }
 
-  private static boolean alreadyConverted(String id) {
+  protected static boolean alreadyConverted(String id) {
     synchronized (convertedKeys) {
       if (convertedKeys.contains(id)) return true;
       convertedKeys.add(id);
@@ -242,7 +242,7 @@ public class DeleteOrphans {
     }
   }
 
-  private static void removeAspects(JsonDocument doc, List<String> keys) {
+  protected static void removeAspects(JsonDocument doc, List<String> keys) {
     if (doc.content().containsKey("aspectLocations")) {
       JsonObject obj = doc.content().getObject("aspectLocations");
       for (String s : obj.getNames()) {
@@ -255,7 +255,7 @@ public class DeleteOrphans {
     }
   }
 
-  private static boolean removeHanger(String hangerId, JsonDocument hangerInfo, List<String> keys) {
+  protected static boolean removeHanger(String hangerId, JsonDocument hangerInfo, List<String> keys) {
 
     JsonDocument doc = getItem(hangerId);
     if (doc == null && hangerInfo == null) {
@@ -300,13 +300,13 @@ public class DeleteOrphans {
     return true;
   }
 
-  private static String getHangerInfoFromHangerId(String hangerId) {
+  protected static String getHangerInfoFromHangerId(String hangerId) {
     String hangerInfoId = hangerId.replace("Hanger::", "HangerInfo::");
     hangerInfoId = hangerInfoId.substring(0, hangerInfoId.lastIndexOf("::"));
     return hangerInfoId;
   }
 
-  private static void execute() throws Exception {
+  protected static void execute() throws Exception {
 
     String filename = "delete-orphans-" + new Date().getTime() + ".log";
     FileHandler fileHandler = new FileHandler(filename);
@@ -370,7 +370,7 @@ public class DeleteOrphans {
 
   }
 
-  private static void showStatistics() {
+  protected static void showStatistics() {
 
     StringBuffer buf = new StringBuffer();
     if (!restore) {
@@ -392,7 +392,7 @@ public class DeleteOrphans {
 
   }
 
-  private static boolean processRow(String hangerId) {
+  protected static boolean processRow(String hangerId) {
 
     List<JsonDocument> updates = new ArrayList<>();
     List<String> deletes = new ArrayList<>();
@@ -502,7 +502,7 @@ public class DeleteOrphans {
   }
 
 
-  private static void sendUpdates(List<JsonDocument> items) {
+  protected static void sendUpdates(List<JsonDocument> items) {
     //items.forEach(doc -> System.out.println(doc.id()));
     Observable
             .from(items)
@@ -527,7 +527,7 @@ public class DeleteOrphans {
             .lastOrDefault(null);
   }
 
-  private static void sendDeletes(List<String> keys) {
+  protected static void sendDeletes(List<String> keys) {
     Observable
             .from(keys)
             .flatMap((Func1<String, Observable<JsonDocument>>) key -> bucket.async().remove(key).onErrorResumeNext(
@@ -546,7 +546,7 @@ public class DeleteOrphans {
 
   }
 
-  private static void delete() throws InterruptedException {
+  protected static void delete() throws InterruptedException {
     ViewQuery query;
     if (devView) {
       query = ViewQuery.from(design, view).development();
@@ -592,7 +592,7 @@ public class DeleteOrphans {
     executor.awaitTermination(Long.MAX_VALUE, TimeUnit.NANOSECONDS);
   }
 
-  private static void sendKafkaMutation(String hangerId, JsonDocument hangerInfo, List<JsonDocument> updates) {
+  protected static void sendKafkaMutation(String hangerId, JsonDocument hangerInfo, List<JsonDocument> updates) {
     String message = createMutationMessage (hangerInfo);
 
     log.info(message);
@@ -646,15 +646,18 @@ public class DeleteOrphans {
     return false;
   }
 
-  private static String getAspectIdFromContentId(String aspectContentId) {
+  protected static String getAspectIdFromContentId(String aspectContentId) {
     return "Aspect::" + aspectContentId.replace("onecms:", "").replace(":", "::");
   }
 
-  private static String getHangerIdFromContentId(String hangerContentId) {
+  protected static String getHangerIdFromContentId(String hangerContentId) {
     return "Hanger::" + hangerContentId.replace("onecms:", "").replace(":", "::");
   }
 
-  private static synchronized void accumlateTotals(String type) {
+  protected static String getHangerInfoIdFromContentId(String hangerContentId) {
+    return "HangerInfo::" + hangerContentId.replace("onecms:", "").replace(":", "::");
+  }
+  protected static synchronized void accumlateTotals(String type) {
     long value = 0;
     if (totals.containsKey(type)) {
       value = totals.get(type).longValue();
@@ -666,7 +669,7 @@ public class DeleteOrphans {
 
   }
 
-  private static boolean convertAspect(String hangerId, JsonDocument hanger,
+  protected static boolean convertAspect(String hangerId, JsonDocument hanger,
                                        String sourceType, String targetType,
                                        String targetBean, boolean convertWireArticles,
                                        List<JsonDocument> updates, List<String> deletes) {
@@ -783,7 +786,7 @@ public class DeleteOrphans {
 
 
 
-  private static JsonObject getDateObject(long creationDate) {
+  protected static JsonObject getDateObject(long creationDate) {
     Date d = new Date (creationDate);
     String dateJson = String.format("{\"_type\": \"java.util.Date\",\"time\": %d}", d.getTime());
 
@@ -904,7 +907,7 @@ public class DeleteOrphans {
     execute();
   }
 
-  private static String createMutationMessage(final JsonDocument hangerInfo)
+  protected static String createMutationMessage(final JsonDocument hangerInfo)
   {
 
     String cvid = getCvid(hangerInfo);
@@ -917,7 +920,7 @@ public class DeleteOrphans {
   /**
    * Using "raw" json since we do not want dependencies on HangerInfo et. al.
    */
-  private static String getCvid(JsonDocument doc)
+  protected static String getCvid(JsonDocument doc)
   {
     JsonObject top = doc.content();
     if (top.containsKey("versions")) {

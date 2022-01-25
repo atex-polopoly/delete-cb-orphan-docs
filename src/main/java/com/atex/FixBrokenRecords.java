@@ -1,6 +1,5 @@
-package com.atex.onecms;
+package com.atex;
 
-import com.atex.DeleteOrphans;
 import com.couchbase.client.java.Cluster;
 import com.couchbase.client.java.CouchbaseCluster;
 import com.couchbase.client.java.document.JsonDocument;
@@ -25,7 +24,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.logging.FileHandler;
 import java.util.logging.Logger;
 import java.util.logging.SimpleFormatter;
-import java.util.stream.Stream;
 
 import static java.time.temporal.ChronoField.*;
 
@@ -104,24 +102,9 @@ public class FixBrokenRecords extends DeleteOrphans {
     private static void fixData() throws InterruptedException, IOException {
 
 
-        Stream<String> input = Files.lines(new File(file).toPath());
+        List<String> input = Files.readAllLines(new File(file).toPath());
 
-
-        String[] ids = input.toArray(String[]::new);
-        ids = new String[] {"onecms:f661edaf-557d-4cb6-b700-4fa1df8efca4",
-        "onecms:546cf543-3220-493d-a027-271242d266c0",
-        "onecms:cf6f7213-ea08-4572-83d0-f53cee287186",
-        "onecms:3d7f97f2-5855-497e-903e-f4375aa46d85",
-        "onecms:0e6b7203-022d-4660-b103-af4020ccc1fc",
-        "onecms:175f2e74-bbde-4a88-b54c-b621b2feeff6",
-        "onecms:f32b675d-f4d6-49b2-a344-cbb9ad7f9f45",
-        "onecms:6083ef00-eb1d-4f63-9fd2-baba7e6c7dfd",
-        "onecms:cd41d270-5ab8-4750-871c-dc3e2e70d3c4",
-        "onecms:30485a65-2ab4-4983-9cfa-146e925979d9",
-        "onecms:93de7d45-a513-4e26-a282-79f11fad4fa8",
-        "onecms:430a2f24-29e3-4674-8a7b-3ca32a344076"};
-
-        total = ids.length;
+        total = input.size();
 
 
         log.info("Number of Hangers to process : " + total);
@@ -129,7 +112,7 @@ public class FixBrokenRecords extends DeleteOrphans {
         timeStarted = System.currentTimeMillis();
 
 
-        for (String id : ids) {
+        for (String id : input) {
             processRow(id);
 
         }
