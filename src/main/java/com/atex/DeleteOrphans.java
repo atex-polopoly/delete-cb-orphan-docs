@@ -324,43 +324,48 @@ public class DeleteOrphans {
             .maxRequestLifetime(TimeUnit.SECONDS.toMillis(1200L))
             .build();
 
-    Cluster cluster = CouchbaseCluster.create(env, cbAddress);
-
+    Cluster cluster = null;
     Cluster rescueCluster = null;
 
     try {
-      bucket = cluster.openBucket(cbBucket, cbBucketPwd);
-    } catch (Exception e) {
-      cluster.authenticate("cmuser", cbBucketPwd);
-      bucket = cluster.openBucket(cbBucket);
-    }
+      cluster = CouchbaseCluster.create(env, cbAddress);
 
-    if (rescueCbBucket != null && !rescueCbBucket.isEmpty()) {
-      rescueCluster = CouchbaseCluster.create(env, rescueCbAddress);
       try {
-        log.info("rescueCbBucket: " + rescueCbBucket);
-        log.info("rescueCbBucketPwd: " + rescueCbBucketPwd);
-        rescueBucket = rescueCluster.openBucket(rescueCbBucket, rescueCbBucketPwd);
+        bucket = cluster.openBucket(cbBucket, cbBucketPwd);
       } catch (Exception e) {
-        log.info("Exception: " + e);
-        rescueCluster.authenticate("cmuser", rescueCbBucketPwd);
-        rescueBucket = rescueCluster.openBucket(rescueCbBucket);
+        cluster.authenticate("cmuser", cbBucketPwd);
+        bucket = cluster.openBucket(cbBucket);
       }
-    }
 
-    if (restore) {
-      restoreDeleted();
-    } else {
-      delete();
-    }
+      if (rescueCbBucket != null && !rescueCbBucket.isEmpty()) {
+        rescueCluster = CouchbaseCluster.create(env, rescueCbAddress);
+        try {
+          log.info("rescueCbBucket: " + rescueCbBucket);
+          log.info("rescueCbBucketPwd: " + rescueCbBucketPwd);
+          rescueBucket = rescueCluster.openBucket(rescueCbBucket, rescueCbBucketPwd);
+        } catch (Exception e) {
+          log.info("Exception: " + e);
+          rescueCluster.authenticate("cmuser", rescueCbBucketPwd);
+          rescueBucket = rescueCluster.openBucket(rescueCbBucket);
+        }
+      }
 
-    bucket.close();
-    cluster.disconnect();
+      if (restore) {
+        restoreDeleted();
+      } else {
+        delete();
+      }
+    } catch (InterruptedException e) {
+      log.warning("Interrupted Exception: "+e.getMessage());
+    } finally {
+      if (bucket != null) bucket.close();
+      if (cluster != null) cluster.disconnect();
 
-    if (rescueBucket != null) {
-      rescueBucket.close();
-      if (rescueCluster!=null) {
-        rescueCluster.disconnect();
+      if (rescueBucket != null) {
+        rescueBucket.close();
+        if (rescueCluster!=null) {
+          rescueCluster.disconnect();
+        }
       }
     }
 
@@ -577,11 +582,10 @@ public class DeleteOrphans {
     timeStarted = System.currentTimeMillis();
 
     ExecutorService executor = Executors.newFixedThreadPool(numThreads);
-    BoundedExecutor bex = new BoundedExecutor(executor, numThreads);
 
     for (ViewRow row : result) {
 
-      bex.submitTask(() -> processRow(row.id()));
+      executor.submit(() -> processRow(row.id()));
 
       // Not ideal as we have multiple threads running, but it should help jump out early when done
       if (batchSize > 0 && (removed + converted) >= batchSize) {
