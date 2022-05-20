@@ -30,6 +30,19 @@ import java.util.logging.FileHandler;
 import java.util.logging.Logger;
 import java.util.logging.SimpleFormatter;
 
+/***
+ * Needs the following view defined
+ * function (doc, meta) {
+ *   if (meta.id.startsWith ("Aspect::") && doc.name == "engagementAspect") {
+ *     for (var i in doc.data.engagementList) {
+ *       var eng = doc.data.engagementList[i];
+ *   		if (eng.appType === "escenic") {
+ *         emit(meta.id, eng.appPk);
+ *       }
+ *     }
+ *   }
+ * }
+ */
 public class AddKioskEngagement {
 
     public static final String BEAN_SOURCE_TYPE = "com.atex.onecms.app.dam.engagement.EngagementAspect";
