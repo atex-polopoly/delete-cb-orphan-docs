@@ -56,7 +56,6 @@ public class ChangeAspectBeanType {
   private static volatile int converted = 0;
   private static volatile int removed = 0;
 
-  private static final Set<String> deletedKeys = Collections.synchronizedSet(new HashSet<>());
   private static final Set<String> convertedKeys  = Collections.synchronizedSet(new HashSet<>());
   private static int limit = -1;
   private static int skip = -1;
@@ -237,9 +236,6 @@ public class ChangeAspectBeanType {
 
   private static boolean processRow(String itemId) {
 
-    List<JsonDocument> updates = new ArrayList<>();
-    List<String> keys = new ArrayList<>();
-
     processed++;
 
     if (maxConverted > 0 && converted >= maxConverted) {
@@ -279,18 +275,10 @@ public class ChangeAspectBeanType {
     //items.forEach(doc -> System.out.println(doc.id()));
     Observable
             .from(items)
-            .flatMap(new Func1<JsonDocument, Observable<JsonDocument>>() {
-              @Override
-              public Observable<JsonDocument> call(final JsonDocument docToInsert) {
-                return bucket.async().replace(docToInsert).onErrorResumeNext(new Func1<Throwable, Observable<? extends JsonDocument>>() {
-                  @Override
-                  public Observable<? extends JsonDocument> call(Throwable throwable) {
-                    log.warning ("Error processing doc " + docToInsert.id() + " : " + throwable);
-                    return Observable.empty();
-                  }
-                });
-              }
-            })
+            .flatMap((Func1<JsonDocument, Observable<JsonDocument>>) docToInsert -> bucket.async().replace(docToInsert).onErrorResumeNext(throwable -> {
+              log.warning ("Error processing doc " + docToInsert.id() + " : " + throwable);
+              return Observable.empty();
+            }))
             .retryWhen(RetryBuilder
                     .anyOf(BackpressureException.class)
                     .delay(Delay.exponential(TimeUnit.MILLISECONDS, 100))
@@ -303,12 +291,7 @@ public class ChangeAspectBeanType {
   private static void sendToRescue(List<String> keys) {
     Observable
         .from(keys)
-        .flatMap(new Func1<String, Observable<RawJsonDocument>>() {
-          @Override
-          public Observable<RawJsonDocument> call(String key) {
-            return bucket.async().get(key, RawJsonDocument.class);
-          }
-        })
+        .flatMap((Func1<String, Observable<RawJsonDocument>>) key -> bucket.async().get(key, RawJsonDocument.class))
         .retryWhen(RetryBuilder
             .anyOf(BackpressureException.class)
             .delay(Delay.exponential(TimeUnit.MILLISECONDS, 100))
@@ -325,28 +308,7 @@ public class ChangeAspectBeanType {
 
   }
 
-  private static void sendUpdatedToRescue(List<JsonDocument> updates) {
-    Observable
-        .from(updates)
-        .retryWhen(RetryBuilder
-            .anyOf(BackpressureException.class)
-            .delay(Delay.exponential(TimeUnit.MILLISECONDS, 100))
-            .max(10)
-            .build())
-        .toBlocking()
-        .subscribe(jsonDocument ->  {
-          try {
-            rescueBucket.insert(jsonDocument);
-          } catch (Exception ex) {
-            log.warning ("Error inserting doc: " + ex);
-          }
-        });
 
-  }
-
-  private static String getHangerIdFromContentId(String hangerContentId) {
-    return "Hanger::" + hangerContentId.replace("onecms:", "").replace(":", "::");
-  }
 
   private static synchronized void accumlateTotals(String type) {
     long value = 0;
@@ -360,47 +322,7 @@ public class ChangeAspectBeanType {
 
   }
 
-  private static void convertAspect(String hangerId, JsonDocument hanger, String sourceType,
-                                       String sourceBean, String targetBean,
-                                       List<JsonDocument> updates) throws Exception {
-    JsonObject aspects = hanger.content().getObject("aspectLocations");
-    String aspectContentId = aspects.getString(sourceType);
-    if (aspectContentId!=null && !alreadyConverted(aspectContentId)) {
-      String aspectId = getAspectIdFromContentId(aspectContentId);
 
-      JsonDocument aspect = getItem(aspectId);
-      if (aspect != null && aspect.content().getString("name").equalsIgnoreCase(sourceType)) {
-        JsonObject data = aspect.content().getObject("data");
-        if (sourceBean == null || data.getObject("content").getString("_type").equals(sourceBean)) {
-          String contentId = aspect.content().getObject("systemData").getString("contentId");
-          log.info("Converting " + contentId + ": " + data.getObject("content").getString("_type") + " to " + targetBean);
-          accumlateTotals("Converted from aspect of name=" + sourceType + " was bean= " + data.getObject("content").getString("_type") + " converted to bean=" + targetBean);
-          data.put("_type", targetBean);
-
-          if (!dryRun) {
-            log.info("Converting Hanger " + sourceType);
-            updates.add(aspect);
-          } else {
-            log.info("TEST  " + aspectId + " to name=" + sourceType);
-          }
-        }
-      }
-    }
-
-    if (!dryRun) {
-      log.info ("Converting Hanger " + hangerId + " to " + targetBean);
-      updates.add (hanger);
-    } else {
-      log.info ("Test Aspect " + hangerId + " to " + targetBean);
-    }
-  }
-
-  private static JsonObject getDateObject(long creationDate) {
-    Date d = new Date (creationDate);
-    String dateJson = String.format("{\"_type\": \"java.util.Date\",\"time\": %d}", d.getTime());
-
-    return JsonObject.fromJson(dateJson);
-  }
 
   public static void main(String[] args) throws Exception {
     Options options = new Options();
@@ -515,47 +437,5 @@ public class ChangeAspectBeanType {
 
     execute();
   }
-
-  /**
-   * Using "raw" json since we do not want dependencies on HangerInfo et. al.
-   */
-  private static String getCvid(JsonDocument doc)
-  {
-    JsonObject top = doc.content();
-    if (top.containsKey("versions")) {
-      JsonArray versions = top.getArray("versions");
-      if (versions.size() > 0) {
-        JsonObject latestVersion = (JsonObject) versions.get(versions.size() - 1);
-        return latestVersion.getString("version");
-      }
-    }
-    return null;
-  }
-
-    public static class BoundedExecutor {
-        private final Executor exec;
-        private final Semaphore semaphore;
-        public BoundedExecutor(Executor exec, int bound) {
-            this.exec = exec;
-            this.semaphore = new Semaphore(bound);
-        }
-        public void submitTask(final Runnable command)
-                throws InterruptedException {
-            semaphore.acquire();
-            try {
-                exec.execute(new Runnable() {
-                    public void run() {
-                        try {
-                            command.run();
-                        } finally {
-                            semaphore.release();
-                        }
-                    }
-                });
-            } catch (RejectedExecutionException e) {
-                semaphore.release();
-            }
-        }
-    }
 
 }
