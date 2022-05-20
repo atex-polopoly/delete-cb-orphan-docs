@@ -235,46 +235,14 @@ public class AddKioskEngagement {
         if (itemId.startsWith("Aspect::")) {
             JsonDocument aspect = getItem(itemId);
             if (aspect != null && aspect.content() != null) {
-                JsonObject data = aspect.content().getObject("data");
-                if (data != null && data.getString("_type").equals(BEAN_SOURCE_TYPE)) {
+                List<JsonDocument> updates = processAspect (aspect);
 
-                    JsonArray engagements = data.getArray("engagementList");
+                if (updates != null) {
+                    if (rescueBucket != null) sendToRescue(Collections.singletonList(itemId));
+                    if (!dryRun) sendUpdates(updates);
 
-                    String escenicId = null;
-                    String kioskId = null;
-                    String userName = null;
-                    String timestamp = null;
+                    return true;
 
-                    for (int i = 0; i < engagements.size(); i++) {
-
-                        JsonObject eng = engagements.getObject(i);
-
-                        String type = eng.getString("appType");
-                        String appPk = eng.getString("appPk");
-
-                        if (type != null && type.equalsIgnoreCase("escenic")) {
-                            escenicId = appPk;
-                            userName = eng.getString("userName");
-                            timestamp = eng.getString("timestamp");
-                        }
-                        if (type != null && type.equalsIgnoreCase("atex.dm.polopoly") && appPk != null && appPk.startsWith("kiosk:")) {
-                            kioskId = appPk;
-                        }
-                    }
-
-
-                    if (kioskId == null) {
-
-                        KioskMapping mapping = lookupKioskId(kioskMappingSupplier, escenicId, timestamp, userName);
-                        engagements.add(getKioskEngagementObject(mapping));
-                        List<JsonDocument> updates = new ArrayList<>();
-                        updates.add(aspect);
-
-                        if (rescueBucket != null) sendToRescue(Collections.singletonList(itemId));
-                        if (!dryRun) sendUpdates(updates);
-
-                        return true;
-                    }
                 }
 
                 accumlateTotals("Processed");
@@ -284,8 +252,55 @@ public class AddKioskEngagement {
         return false;
     }
 
+    protected static List<JsonDocument> processAspect(JsonDocument aspect) {
+        JsonObject data = aspect.content().getObject("data");
+        if (data != null && data.getString("_type").equals(BEAN_SOURCE_TYPE)) {
+
+            JsonArray engagements = data.getArray("engagementList");
+
+            String escenicId = null;
+            String kioskId = null;
+            String userName = null;
+            String timestamp = null;
+
+            for (int i = 0; i < engagements.size(); i++) {
+
+                JsonObject eng = engagements.getObject(i);
+
+                String type = eng.getString("appType");
+                String appPk = eng.getString("appPk");
+
+                if (type != null && type.equalsIgnoreCase("escenic")) {
+                    escenicId = appPk;
+                    userName = eng.getString("userName");
+                    timestamp = eng.getString("timestamp");
+                }
+                if (type != null && type.equalsIgnoreCase("atex.dm.polopoly") && appPk != null && appPk.startsWith("kiosk:")) {
+                    kioskId = appPk;
+                }
+            }
+
+
+            if (kioskId == null) {
+
+                KioskMapping mapping = lookupKioskId(kioskMappingSupplier, escenicId, timestamp, userName);
+                engagements.add(getKioskEngagementObject(mapping));
+                List<JsonDocument> updates = new ArrayList<>();
+                updates.add(aspect);
+
+                return updates;
+
+            }
+        }
+
+        return null;
+    }
+
     protected static JsonObject getKioskEngagementObject(KioskMapping mapping) {
 
+        if (mapping == null) {
+            return null;
+        }
 
         return JsonObject.fromJson("{\n" +
                 "      \"_type\": \"com.atex.onecms.app.dam.engagement.EngagementDesc\",\n" +

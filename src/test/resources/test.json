@@ -1,0 +1,28 @@
+{
+  "name": "engagementAspect",
+  "systemData": {
+    "creationTime": 1619184027756,
+    "modificationTime": 1619184027756,
+    "contentId": "onecms:000c4b9e-1ed5-4eea-bce8-302176c41f87:54b07389-2710-48a7-956b-f970ea48f0db"
+  },
+  "data": {
+    "_type": "com.atex.onecms.app.dam.engagement.EngagementAspect",
+    "engagementList": [{
+      "_type": "com.atex.onecms.app.dam.engagement.EngagementDesc",
+      "appType": "escenic",
+      "appPk": "250566909",
+      "creationTimestamp": "1619184027640",
+      "attributes": [{
+        "_type": "com.atex.onecms.app.dam.engagement.EngagementElement",
+        "name": "link",
+        "value": "250566909"
+      }, {
+        "_type": "com.atex.onecms.app.dam.engagement.EngagementElement",
+        "name": "location",
+        "value": "https://editorial-test-cue.inm.bluebillywig.com/webservice/escenic/content/250566909"
+      }],
+      "userName": "sysadmin",
+      "timestamp": "1619184027640"
+    }]
+  }
+}
