@@ -51,7 +51,7 @@ public class AddKioskEngagement {
 
     private static Bucket bucket;
     private static String startKey;
-    private static int numThreads = 8;
+    private static int numThreads = 1;
 
     private static volatile int processed = 0;
     private static volatile int converted = 0;
@@ -88,13 +88,6 @@ public class AddKioskEngagement {
         return response;
     }
 
-    private static boolean alreadyConverted(String id) {
-        synchronized (convertedKeys) {
-            if (convertedKeys.contains(id)) return true;
-            convertedKeys.add(id);
-            return false;
-        }
-    }
 
     private static void execute() throws Exception {
 
@@ -124,7 +117,7 @@ public class AddKioskEngagement {
             try {
                 bucket = cluster.openBucket(cbBucket, cbBucketPwd);
             } catch (Exception e) {
-                cluster.authenticate("cmuser", cbBucketPwd);
+                cluster.authenticate("cmbucket", cbBucketPwd);
                 bucket = cluster.openBucket(cbBucket);
             }
 
@@ -186,7 +179,7 @@ public class AddKioskEngagement {
         timeStarted = System.currentTimeMillis();
 
 
-        KioskMappingSupplier kioskMappingSupplier = new KioskMappingSupplier(new File("kiosk-mappings.csv"), 100000);
+        kioskMappingSupplier = new KioskMappingSupplier(new File("kiosk-mappings.csv"), 100000);
         ExecutorService executor = Executors.newFixedThreadPool(numThreads);
 
         for (ViewRow row : result) {
@@ -212,9 +205,6 @@ public class AddKioskEngagement {
 
         StringBuffer buf = new StringBuffer();
         buf.append("==============================================================\n");
-        buf.append("Number of records processed       : " + processed + "\n");
-        buf.append("Number of records converted: " + converted + "\n");
-
         for (String key : totals.keySet()) {
             buf.append(key).append(" : ").append(totals.get(key)).append("\n");
         }
@@ -235,12 +225,13 @@ public class AddKioskEngagement {
         if (itemId.startsWith("Aspect::")) {
             JsonDocument aspect = getItem(itemId);
             if (aspect != null && aspect.content() != null) {
+                log.info("Processing " + itemId);
                 List<JsonDocument> updates = processAspect (aspect);
 
                 if (updates != null) {
                     if (rescueBucket != null) sendToRescue(Collections.singletonList(itemId));
                     if (!dryRun) sendUpdates(updates);
-
+                    accumlateTotals("Converted OK");
                     return true;
 
                 }
@@ -284,12 +275,19 @@ public class AddKioskEngagement {
             if (kioskId == null) {
 
                 KioskMapping mapping = lookupKioskId(kioskMappingSupplier, escenicId, timestamp, userName);
-                engagements.add(getKioskEngagementObject(mapping));
-                List<JsonDocument> updates = new ArrayList<>();
-                updates.add(aspect);
+                if (mapping == null) {
+                    accumlateTotals("Mapping not found");
+                } else {
+                    log.info("Updating " + aspect.id());
+                    engagements.add(getKioskEngagementObject(mapping));
+                    List<JsonDocument> updates = new ArrayList<>();
+                    updates.add(aspect);
+                    converted++;
 
-                return updates;
-
+                    return updates;
+                }
+            } else {
+                accumlateTotals("Kiosk engagement already present");
             }
         }
 
@@ -418,7 +416,7 @@ public class AddKioskEngagement {
         options.addOption("rescueCbBucket", true, "The Rescue bucket name");
         options.addOption("rescueCbBucketPwd", true, "The Rescue bucket password");
         options.addOption("restore", false, "Restore content from Rescue Bucket");
-        options.addOption("maxConverted", true, "Max hangers to convert");
+        options.addOption("maxConverted", true, "Max records to convert");
 
         try {
             CommandLineParser parser = new DefaultParser();
@@ -498,8 +496,6 @@ public class AddKioskEngagement {
 
             if (cmdLine.hasOption("maxConverted")) {
                 maxConverted = Integer.parseInt(cmdLine.getOptionValue("maxConverted"));
-            } else {
-                throw new Exception();
             }
 
 
@@ -526,15 +522,17 @@ public class AddKioskEngagement {
 
             f.lines().forEach( s -> {
                 String[] csv = s.split(";");
-                KioskMapping m = new KioskMapping();
-                m.kioskId = csv[1];
-                if (csv.length > 2) {
-                    m.timestamp = csv[2];
+                if (csv.length > 1) {
+                    KioskMapping m = new KioskMapping();
+                    m.kioskId = csv[1];
+                    if (csv.length > 2) {
+                        m.timestamp = csv[2];
+                    }
+                    if (csv.length > 3) {
+                        m.userId = csv[3];
+                    }
+                    put(csv[0], m);
                 }
-                if (csv.length > 3) {
-                    m.userId = csv[3];
-                }
-                put(csv[0],m);
             });
         }
 

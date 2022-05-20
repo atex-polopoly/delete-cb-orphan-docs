@@ -47,7 +47,7 @@ public class AddKioskEngagementTest {
     @Test
     public void testFromFile () throws FileNotFoundException {
 
-        AddKioskEngagement.KioskMappingSupplier supplier = new AddKioskEngagement.KioskMappingSupplier(new File(this.getClass().getClassLoader().getResource("test.file").getFile()), 100000);
+        AddKioskEngagement.KioskMappingSupplier supplier = new AddKioskEngagement.KioskMappingSupplier(new File(this.getClass().getClassLoader().getResource("kiosk-mappings.csv").getFile()), 100000);
         AddKioskEngagement.KioskMapping fred1 = AddKioskEngagement.lookupKioskId(supplier, "c1234567890", "1234567890", "fred");
 
         assertNotNull (fred1);
@@ -73,7 +73,7 @@ public class AddKioskEngagementTest {
     @Test
     public void testProcess () throws IOException {
 
-        AddKioskEngagement.kioskMappingSupplier = new AddKioskEngagement.KioskMappingSupplier(new File(this.getClass().getClassLoader().getResource("test.file").getFile()), 100000);
+        AddKioskEngagement.kioskMappingSupplier = new AddKioskEngagement.KioskMappingSupplier(new File(this.getClass().getClassLoader().getResource("test-mappings.csv").getFile()), 100000);
 
 
         File jsonFile = new File(this.getClass().getClassLoader().getResource("test.json").getFile());
