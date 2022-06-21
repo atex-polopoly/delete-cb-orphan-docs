@@ -2,7 +2,6 @@ package com.atex;
 
 import com.couchbase.client.core.BackpressureException;
 import com.couchbase.client.core.time.Delay;
-import com.couchbase.client.deps.io.netty.util.internal.StringUtil;
 import com.couchbase.client.java.Bucket;
 import com.couchbase.client.java.Cluster;
 import com.couchbase.client.java.CouchbaseCluster;
@@ -13,6 +12,7 @@ import com.couchbase.client.java.document.json.JsonObject;
 import com.couchbase.client.java.env.CouchbaseEnvironment;
 import com.couchbase.client.java.env.DefaultCouchbaseEnvironment;
 import com.couchbase.client.java.util.retry.RetryBuilder;
+import com.couchbase.client.java.view.Stale;
 import com.couchbase.client.java.view.ViewQuery;
 import com.couchbase.client.java.view.ViewResult;
 import com.couchbase.client.java.view.ViewRow;
@@ -25,8 +25,8 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.function.Supplier;
 import java.util.logging.FileHandler;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.logging.SimpleFormatter;
 
@@ -42,6 +42,20 @@ import java.util.logging.SimpleFormatter;
  *     }
  *   }
  * }
+ *
+ * Command Line:
+ * java -cp delete-cb-orphan-docs.jar com.atex.AddKioskEngagement -cbAddress http://172.31.51.7:8091 -cbBucket cmbucket -cbBucketPwd cmpasswd -design escenic_ids -view escenic_ids
+ *
+ * Collect the output add grep the content ID's to re-index
+ * grep CID add-kiosk-enagement-1655399496493.log | awk '{print $4;}' > re-index.list
+ *
+ * Change schema.xml and http://localhost:8984/solr/admin/cores?action=RELOAD&core=onecms
+ * java -cp desk-dataload-utils-1.0-SNAPSHOT-jar-with-dependencies.jar com.atex.indexing.FastIndexer http://localhost:8081/connection-properties/connection.properties 32 re-index.list > re-index.log
+ *
+ *
+ *
+ *
+ *
  */
 public class AddKioskEngagement {
 
@@ -64,7 +78,7 @@ public class AddKioskEngagement {
 
     private static Bucket bucket;
     private static String startKey;
-    private static int numThreads = 1;
+    private static int numThreads = 8;
 
     private static volatile int processed = 0;
     private static volatile int converted = 0;
@@ -163,6 +177,9 @@ public class AddKioskEngagement {
 
     private static void process() throws InterruptedException, FileNotFoundException {
         ViewQuery query;
+        ViewQuery lookupId = ViewQuery.from(design, "engagements").limit(1);
+        lookupId.limit(1);
+
         if (devView) {
             query = ViewQuery.from(design, view).development();
         } else {
@@ -177,7 +194,7 @@ public class AddKioskEngagement {
         if (skip > 0) {
             query.skip(skip);
         }
-        //query.stale(Stale.FALSE);
+        query.stale(Stale.FALSE);
 
         ViewResult result = bucket.query(query);
         total = result.totalRows();
@@ -197,7 +214,20 @@ public class AddKioskEngagement {
 
         for (ViewRow row : result) {
 
-            executor.submit(() -> processRow(row.id()));
+            try {
+                String[] parts = row.id().split("::");
+                String aspectId = "onecms:" + parts[1] + ":" + parts[2];
+                lookupId.key(aspectId);
+
+                ViewResult cid = bucket.query(lookupId);
+                Optional<ViewRow> vr = cid.allRows().stream().findFirst();
+                vr.ifPresent(d -> log.info("CID = " + d.value()));
+
+                executor.submit(() -> processRow(row.id()));
+
+            } catch (Exception e) {
+                log.log(Level.WARNING, "Failed to process " + row.id(), e);
+            }
 
             // Not ideal as we have multiple threads running, but it should help jump out early when done
             if (batchSize > 0 && (removed + converted) >= batchSize) {
@@ -240,17 +270,15 @@ public class AddKioskEngagement {
             if (aspect != null && aspect.content() != null) {
                 log.info("Processing " + itemId);
                 List<JsonDocument> updates = processAspect (aspect);
-
                 if (updates != null) {
                     if (rescueBucket != null) sendToRescue(Collections.singletonList(itemId));
                     if (!dryRun) sendUpdates(updates);
                     accumlateTotals("Converted OK");
                     return true;
-
                 }
-
                 accumlateTotals("Processed");
-
+            } else {
+                accumlateTotals("Missing data");
             }
         }
         return false;
@@ -527,7 +555,7 @@ public class AddKioskEngagement {
         String userId;
     }
 
-    public static class KioskMappingSupplier extends HashMap<String, KioskMapping> {
+    public static class KioskMappingSupplier extends ConcurrentHashMap<String, KioskMapping> {
 
         KioskMappingSupplier (File file, int size) throws FileNotFoundException {
             super((int) size);
