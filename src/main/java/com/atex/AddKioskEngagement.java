@@ -219,11 +219,17 @@ public class AddKioskEngagement {
                 String aspectId = "onecms:" + parts[1] + ":" + parts[2];
                 lookupId.key(aspectId);
 
+                String contentId = null;
                 ViewResult cid = bucket.query(lookupId);
                 Optional<ViewRow> vr = cid.allRows().stream().findFirst();
-                vr.ifPresent(d -> log.info("CID = " + d.value()));
 
-                executor.submit(() -> processRow(row.id()));
+
+                if (vr.isPresent()) {
+                    contentId = vr.get().value().toString();
+                }
+
+                String finalContentId = contentId;
+                executor.submit(() -> processRow(row.id(), finalContentId));
 
             } catch (Exception e) {
                 log.log(Level.WARNING, "Failed to process " + row.id(), e);
@@ -257,7 +263,7 @@ public class AddKioskEngagement {
 
     }
 
-    private static boolean processRow(String itemId) {
+    private static boolean processRow(String itemId, String contentId) {
 
         processed++;
 
@@ -272,6 +278,7 @@ public class AddKioskEngagement {
                 List<JsonDocument> updates = processAspect (aspect);
                 if (updates != null) {
                     if (rescueBucket != null) sendToRescue(Collections.singletonList(itemId));
+                    if (contentId != null) log.info ("CID=" + contentId);
                     if (!dryRun) sendUpdates(updates);
                     accumlateTotals("Converted OK");
                     return true;
@@ -317,6 +324,7 @@ public class AddKioskEngagement {
 
                 KioskMapping mapping = lookupKioskId(kioskMappingSupplier, escenicId, timestamp, userName);
                 if (mapping == null) {
+                    log.info ("Escenic ID not found " + escenicId);
                     accumlateTotals("Mapping not found");
                 } else {
                     log.info("Updating " + aspect.id());
