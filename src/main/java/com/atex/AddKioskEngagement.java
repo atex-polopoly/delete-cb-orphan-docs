@@ -102,6 +102,7 @@ public class AddKioskEngagement {
 
 
     private static AtomicInteger restored = new AtomicInteger();
+    private static String mappingFile;
 
     private static JsonDocument getItem(String id) {
         JsonDocument response = null;
@@ -117,6 +118,8 @@ public class AddKioskEngagement {
 
 
     private static void execute() throws Exception {
+
+        kioskMappingSupplier = new KioskMappingSupplier(new File(mappingFile), 1500000);
 
         String filename = "add-kiosk-enagement-" + new Date().getTime() + ".log";
         FileHandler fileHandler = new FileHandler(filename);
@@ -209,7 +212,7 @@ public class AddKioskEngagement {
         timeStarted = System.currentTimeMillis();
 
 
-        kioskMappingSupplier = new KioskMappingSupplier(new File("kiosk-mappings.csv"), 100000);
+
         ExecutorService executor = Executors.newFixedThreadPool(numThreads);
 
         for (ViewRow row : result) {
@@ -217,19 +220,29 @@ public class AddKioskEngagement {
             try {
                 String[] parts = row.id().split("::");
                 String aspectId = "onecms:" + parts[1] + ":" + parts[2];
-                lookupId.key(aspectId);
 
-                String contentId = null;
-                ViewResult cid = bucket.query(lookupId);
-                Optional<ViewRow> vr = cid.allRows().stream().findFirst();
+                String escenicId = (String) row.value();
+
+                KioskMapping mapping = kioskMappingSupplier.get(escenicId);
+
+                if (mapping != null) {
+
+                    lookupId.key(aspectId);
+
+                    String contentId = null;
+                    ViewResult cid = bucket.query(lookupId);
+                    Optional<ViewRow> vr = cid.allRows().stream().findFirst();
 
 
-                if (vr.isPresent()) {
-                    contentId = vr.get().value().toString();
+                    if (vr.isPresent()) {
+                        contentId = vr.get().value().toString();
+                    }
+
+                    String finalContentId = contentId;
+                    executor.submit(() -> processRow(row.id(), finalContentId));
+                } else {
+                    accumlateTotals("Mapping not found");
                 }
-
-                String finalContentId = contentId;
-                executor.submit(() -> processRow(row.id(), finalContentId));
 
             } catch (Exception e) {
                 log.log(Level.WARNING, "Failed to process " + row.id(), e);
@@ -448,11 +461,13 @@ public class AddKioskEngagement {
     public static void main(String[] args) throws Exception {
         Options options = new Options();
         HelpFormatter formatter = new HelpFormatter();
-        options.addOption("cbAddress", true, "One Couchbase node address");
-        options.addOption("cbBucket", true, "The bucket name");
-        options.addOption("cbBucketPwd", true, "The bucket password");
-        options.addOption("design", true, "The view design name");
-        options.addOption("view", true, "The view's design view");
+        options.addOption(Option.builder("cbAddress").hasArg().required().desc("One Couchbase node address").build());
+        options.addOption(Option.builder("cbBucket").hasArg().required().desc("The bucket name").build());
+        options.addOption(Option.builder("cbBucketPwd").hasArg().required().desc("The bucket password").build());
+        options.addOption(Option.builder("design").hasArg().required().desc("The view design name").build());
+        options.addOption(Option.builder("view").hasArg().required().desc("The view's design view").build());
+        options.addOption(Option.builder("mappingFile").hasArg().required().desc("Mapping File").build());
+
         options.addOption("devView", false, "the view is in development (Optional)");
         options.addOption("dryRun", false, "To just output the docs to be deleted (Optional)");
         options.addOption("batchSize", true, "Limit to a number of hanger deletions/conversions (Optional)");
@@ -500,6 +515,7 @@ public class AddKioskEngagement {
             }
             if (cmdLine.hasOption("dryRun")) {
                 dryRun = true;
+                System.out.println("Running in test mode, no changes will be made");
             }
             if (cmdLine.hasOption("batchSize")) {
                 batchSize = Integer.parseInt(cmdLine.getOptionValue("batchSize"));
@@ -547,10 +563,11 @@ public class AddKioskEngagement {
                 maxConverted = Integer.parseInt(cmdLine.getOptionValue("maxConverted"));
             }
 
+            mappingFile = cmdLine.getOptionValue("mappingFile");
 
         } catch (Exception e) {
             e.printStackTrace();
-            formatter.printHelp("ChangeAspectType", options);
+            formatter.printHelp("AddKioskEngagement", options);
             System.exit(-99);
         }
 
