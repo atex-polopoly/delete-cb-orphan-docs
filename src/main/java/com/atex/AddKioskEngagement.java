@@ -47,7 +47,7 @@ import java.util.logging.SimpleFormatter;
  * java -cp delete-cb-orphan-docs.jar com.atex.AddKioskEngagement -cbAddress http://172.31.51.7:8091 -cbBucket cmbucket -cbBucketPwd cmpasswd -design escenic_ids -view escenic_ids
  *
  * Collect the output add grep the content ID's to re-index
- * grep CID add-kiosk-enagement-1655399496493.log | awk '{print $4;}' > re-index.list
+ *  grep "CID" add-kiosk-enagement-1656395460099.log | sort | uniq | awk '{sub (/CID=/,"");print $2;}' > re-index1.list
  *
  * Change schema.xml and http://localhost:8984/solr/admin/cores?action=RELOAD&core=onecms
  * java -cp desk-dataload-utils-1.0-SNAPSHOT-jar-with-dependencies.jar com.atex.indexing.FastIndexer http://localhost:8081/connection-properties/connection.properties 32 re-index.list > re-index.log
@@ -197,7 +197,7 @@ public class AddKioskEngagement {
         if (skip > 0) {
             query.skip(skip);
         }
-        query.stale(Stale.FALSE);
+        query.stale(Stale.TRUE);
 
         ViewResult result = bucket.query(query);
         total = result.totalRows();
