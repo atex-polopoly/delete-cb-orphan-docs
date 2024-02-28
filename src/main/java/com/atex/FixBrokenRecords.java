@@ -1,5 +1,7 @@
 package com.atex;
 
+import com.couchbase.client.core.tracing.ThresholdLogReporter;
+import com.couchbase.client.core.tracing.ThresholdLogTracer;
 import com.couchbase.client.java.Cluster;
 import com.couchbase.client.java.CouchbaseCluster;
 import com.couchbase.client.java.document.JsonDocument;
@@ -7,13 +9,26 @@ import com.couchbase.client.java.document.json.JsonArray;
 import com.couchbase.client.java.document.json.JsonObject;
 import com.couchbase.client.java.env.CouchbaseEnvironment;
 import com.couchbase.client.java.env.DefaultCouchbaseEnvironment;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonParser;
+import io.opentracing.Tracer;
+import java.io.BufferedReader;
+import java.io.FileReader;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.util.concurrent.Callable;
+import java.util.concurrent.Future;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.stream.Collectors;
 import org.apache.commons.cli.*;
 
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
-import java.time.Instant;
-import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeFormatterBuilder;
 import java.time.format.SignStyle;
@@ -34,6 +49,25 @@ public class FixBrokenRecords extends DeleteOrphans {
     private static Logger log = Logger.getLogger("Cleanup");
     private static String file;
 
+    private static String apiHost;
+    private static String apiUser;
+
+    private static String apiPwd;
+
+    private static String authToken;
+
+    private static JsonParser jsonParser = new JsonParser();
+
+    private static DateTimeFormatter dft = new DateTimeFormatterBuilder()
+        .appendValue(YEAR, 4, 10, SignStyle.EXCEEDS_PAD)
+        .appendLiteral('-')
+        .appendValue(MONTH_OF_YEAR, 2)
+        .appendLiteral('-')
+        .appendValue(DAY_OF_MONTH, 2)
+        .appendLiteral('@')
+        .appendValue(HOUR_OF_DAY, 2).toFormatter();
+    private static boolean fixEmbeddedImages = false;
+
 
     protected static void execute() throws Exception {
 
@@ -43,14 +77,26 @@ public class FixBrokenRecords extends DeleteOrphans {
         fileHandler.setFormatter(simple);
         log.addHandler(fileHandler);
         log.setUseParentHandlers(false);
+        System.setProperty("com.couchbase.sentRequestQueueLimit", "20000");
 
         log.info("Started @ " + new Date());
 
+        Tracer tracer = ThresholdLogTracer.create(ThresholdLogReporter.builder()
+                                                                      .kvThreshold(5, TimeUnit.SECONDS) // 1 micros
+                                                                      .logInterval(1, TimeUnit.MINUTES) // log every second
+                                                                      .sampleSize(10)
+                                                                      .pretty(true) // pretty print the json output in the logs
+                                                                      .build());
+
         CouchbaseEnvironment env = DefaultCouchbaseEnvironment.builder()
                 .connectTimeout(TimeUnit.SECONDS.toMillis(60L))
-                .kvTimeout(TimeUnit.SECONDS.toMillis(60L))
-                .viewTimeout(TimeUnit.SECONDS.toMillis(1200L))
-                .maxRequestLifetime(TimeUnit.SECONDS.toMillis(1200L))
+                .kvTimeout(TimeUnit.SECONDS.toMillis(10))
+
+                //.viewTimeout(TimeUnit.SECONDS.toMillis(1200L))
+                //.maxRequestLifetime(TimeUnit.SECONDS.toMillis(10))
+                //.keepAliveTimeout(TimeUnit.SECONDS.toMillis(5))
+                .ioPoolSize(numThreads)
+                .tracer(tracer)
                 .build();
 
         Cluster cluster = CouchbaseCluster.create(env, cbAddress);
@@ -101,23 +147,124 @@ public class FixBrokenRecords extends DeleteOrphans {
 
     private static void fixData() throws InterruptedException, IOException {
 
+        if (apiHost != null) {
+            HttpURLConnection urlConnection = null;
+            URL contentApi = new URL(apiHost + "/onecms/security/token");
+            try {
+                urlConnection = (HttpURLConnection) contentApi.openConnection();
 
-        List<String> input = Files.readAllLines(new File(file).toPath());
+                String postData = String.format("{\"username\":\"%s\",\"password\":\"%s\"}", apiUser, apiPwd);
+                urlConnection.setRequestMethod("POST");
+                urlConnection.setRequestProperty("Content-Type", "application/json");
+                urlConnection.setRequestProperty("Content-Length", "" + postData.getBytes().length);
+                urlConnection.setUseCaches(false);
+                urlConnection.setDoInput(true);
+                urlConnection.setDoOutput(true);
 
-        total = input.size();
 
+                try(OutputStream os = urlConnection.getOutputStream()) {
+                    byte[] input = postData.getBytes("utf-8");
+                    os.write(input, 0, input.length);
+                }
 
-        log.info("Number of Hangers to process : " + total);
+                urlConnection.connect();
+                int status = urlConnection.getResponseCode();
+
+                if (status == 200) {
+                    String result = new BufferedReader(new InputStreamReader(urlConnection.getInputStream()))
+                        .lines().collect(Collectors.joining("\n"));
+
+                    final JsonElement parse = jsonParser.parse(result);
+                    authToken = parse.getAsJsonObject().get("token").getAsString();
+                } else {
+                    String error = "Status : " + status + " - " + new BufferedReader(new InputStreamReader(urlConnection.getErrorStream()))
+                        .lines().collect(Collectors.joining("\n"));
+                    throw new RuntimeException("Failed to authenticate : " + error + " : Posting " + postData + " to " + contentApi);
+                }
+            } finally {
+                if (urlConnection != null) {
+                    urlConnection.disconnect();
+                }
+            }
+
+        }
+        BufferedReader reader = new BufferedReader(new FileReader(file));
+        while (reader.readLine() != null) total++;
+        reader.close();
+
+        reader = new BufferedReader(new FileReader(file));
+
         log.info("Number of Threads: " + numThreads);
         timeStarted = System.currentTimeMillis();
 
+        List<String> input = getBatch(reader, batchSize);
+        boolean done = false;
 
-        for (String id : input) {
-            processRow(id);
+        while (input.size() > 0 && !done) {
 
+            BoundedExecutor executor = new BoundedExecutor(numThreads);
+
+            for (String id : input) {
+
+                executor.submitButBlockIfFull(() -> processRow(id));
+
+            }
+            executor.shutdown();
+            executor.awaitTermination(Long.MAX_VALUE, TimeUnit.NANOSECONDS);
+            if (!done) {
+                input = getBatch(reader, 50000);
+                convertedKeys.clear();
+                deletedKeys.clear();
+            }
+        }
+        reader.close();
+
+
+
+    }
+
+    private static List<String> getBatch(final BufferedReader reader,
+                                         final int batchSize)
+        throws IOException
+    {
+        List<String> result = new ArrayList<>();
+        for (int i = 0; i < batchSize; i++) {
+            String line = reader.readLine();
+            if (line != null) {
+                result.add(line);
+            } else {
+                return result;
+            }
+        }
+        return result;
+    }
+
+    public static class BoundedExecutor extends ThreadPoolExecutor
+    {
+
+        private final Semaphore semaphore;
+
+        public BoundedExecutor(int bound) {
+            super(bound, Integer.MAX_VALUE, 60L, TimeUnit.SECONDS, new SynchronousQueue<Runnable>());
+            semaphore = new Semaphore(bound);
+        }
+
+        /**Submits task to execution pool, but blocks while number of running threads
+         * has reached the bound limit
+         */
+        public <T> Future<T> submitButBlockIfFull(final Callable<T> task) throws InterruptedException{
+
+            semaphore.acquire();
+            return submit(task);
         }
 
 
+        @Override
+        protected void afterExecute(Runnable r, Throwable t) {
+            super.afterExecute(r, t);
+
+            semaphore.release();
+        }
     }
 
 
@@ -126,7 +273,13 @@ public class FixBrokenRecords extends DeleteOrphans {
 
         List<JsonDocument> updates = new ArrayList<>();
         List<String> deletes = new ArrayList<>();
-        processed++;
+
+        if ((++processed % 1000) == 0) {
+            float percent = (float) (processed * 100.0 / total);
+            String msg = String.format("Processed %d rows of %d, %.2f", processed, total, percent);
+            log.info(msg);
+            System.out.println(new Date() + ":" + msg);
+        }
 
 
         String hangerId = null, hangerInfoId = null, versionContentId = null;
@@ -148,6 +301,9 @@ public class FixBrokenRecords extends DeleteOrphans {
                 JsonObject last = versions.getObject(versions.size() - 1);
                 versionContentId = last.getString("version");
                 hangerId = getHangerIdFromContentId(versionContentId);
+            } else {
+                accumlateTotals("No hanger info found for content");
+                log.info ("No hangerInfo for " + hangerInfoId);
             }
         }
 
@@ -176,7 +332,7 @@ public class FixBrokenRecords extends DeleteOrphans {
             } else {
                 log.info ("Cannot recreate hanger for " + contentId);
                 accumlateTotals("Missing hanger");
-                accumlateTotals("Check : " + contentId);
+                //accumlateTotals("Check : " + contentId);
             }
 
         } else if (fixData) {
@@ -185,24 +341,13 @@ public class FixBrokenRecords extends DeleteOrphans {
             if (hanger != null) {
                 String type = hanger.content().getString("type");
                 accumlateTotals("Doc. Type " + type);
-                long lastModified = hanger.content().getObject("systemData").getLong("modificationTime");
-                Instant modified = Instant.ofEpochMilli(lastModified);
-                DateTimeFormatter dft = new DateTimeFormatterBuilder()
-                        .appendValue(YEAR, 4, 10, SignStyle.EXCEEDS_PAD)
-                        .appendLiteral('-')
-                        .appendValue(MONTH_OF_YEAR, 2)
-                        .appendLiteral('-')
-                        .appendValue(DAY_OF_MONTH, 2)
-                        .appendLiteral('@')
-                        .appendValue(HOUR_OF_DAY, 2).toFormatter();
-
-                String d = dft.format(modified.atZone(ZoneId.of("GMT")));
-
-                accumlateTotals("Date " + d);
+                //long lastModified = hanger.content().getObject("systemData").getLong("modificationTime");
+                //Instant modified = Instant.ofEpochMilli(lastModified);
+                //String d = dft.format(modified.atZone(ZoneId.of("GMT")));
+                //accumlateTotals("Date " + d);
 
                 if (fixData ) {
                     needsFixing = needsFixing | checkAspects(hangerId, hanger, hangerInfo, updates, deletes);
-
                 }
 
             }
@@ -211,8 +356,38 @@ public class FixBrokenRecords extends DeleteOrphans {
         if (dryRun) {
             if (needsFixing) {
                 log.info("Content ID " + contentId + " was broken with " + updates.size() + " fixes");
+                if (apiHost != null) {
+                    try {
+                        URL contentApi = new URL(apiHost + "/onecms/content/contentid/" + contentId);
+                        HttpURLConnection urlConnection = null;
+                        try {
+                            urlConnection = (HttpURLConnection) contentApi.openConnection();
+                            urlConnection.setRequestProperty("X-Auth-Token", authToken);
+                            urlConnection.setRequestMethod("GET");
+                            urlConnection.setRequestProperty("Content-Type", "application/json");
+                            urlConnection.setUseCaches(false);
+                            urlConnection.setDoInput(true);
+                            urlConnection.setDoOutput(true);
+                            urlConnection.connect();
+                            int status = urlConnection.getResponseCode();
+                            if (status == 200) {
+                                log.info("Content ID " + contentId + " is not broken in API");
+                            } else {
+                                log.info("Content ID " + contentId + " is broken in API");
+                            }
+                        } finally {
+                            if (urlConnection != null) {
+                                urlConnection.disconnect();
+                            }
+                        }
+                    } catch (Exception e) {
+                        log.info("Could not get content API");
+                    }
+                }
+                accumlateTotals("Broken Content");
             } else {
-                log.info("Content ID " + contentId + " is OK");
+                //log.info("Content ID " + contentId + " is OK");
+                accumlateTotals("OK Content");
             }
         } else {
             updates.forEach(doc -> {
@@ -291,7 +466,7 @@ public class FixBrokenRecords extends DeleteOrphans {
                     updates.add(hanger);
                 }
             }
-            if (aspect != null && type.equals("atex.onecms.article")) {
+            if (aspect != null && type.equals("atex.onecms.article") && fixEmbeddedImages ) {
 
                 JsonArray images = aspect.content().getObject("data").getArray("images");
                 if (images != null ) {
@@ -316,19 +491,27 @@ public class FixBrokenRecords extends DeleteOrphans {
     public static void main(String[] args) throws Exception {
         Options options = new Options();
         HelpFormatter formatter = new HelpFormatter();
+
+        batchSize = 50000;
+        numThreads = 10;
+
         options.addOption("cbAddress", true, "One Couchbase node address");
         options.addOption("cbBucket", true, "The bucket name");
         options.addOption("cbBucketPwd", true, "The bucket password");
         options.addOption("file", true, "A file of oncms content ID's");
         options.addOption("dryRun", false, "To just output the docs to be deleted (Optional)");
-        options.addOption("fixData", false, "To also fix  data");
+        options.addOption("fixData", false, "To also fix data");
 
-        options.addOption("numThreads", true, "Number of threads to use, default 10");
+        options.addOption("numThreads", true, "Number of threads to use, default " + numThreads);
+        options.addOption("batchSize", true, "Size of batch, default " + batchSize);
 
         options.addOption("rescueCbAddress", true, "One Rescue Couchbase node address");
         options.addOption("rescueCbBucket", true, "The Rescue bucket name");
         options.addOption("rescueCbBucketPwd", true, "The Rescue bucket password");
         options.addOption("restore", false, "Restore content from Rescue Bucket");
+        options.addOption("apiHost", true, "API Host for cross check on content");
+        options.addOption("apiUser", true, "API User for cross check on content");
+        options.addOption("apiPwd", true, "API Password for cross check on content");
 
         try {
             CommandLineParser parser = new DefaultParser();
@@ -363,18 +546,18 @@ public class FixBrokenRecords extends DeleteOrphans {
                 fixData = true;
             }
 
+
             if (cmdLine.hasOption("batchSize")) {
                 batchSize = Integer.parseInt(cmdLine.getOptionValue("batchSize"));
             }
-            numThreads = 1;
+
             if (cmdLine.hasOption("numThreads")) {
                 numThreads = Integer.parseInt(cmdLine.getOptionValue("numThreads"));
-                if (numThreads > 20) {
-                    numThreads = 20;
-                } else if (numThreads < 1) {
-                    numThreads = 8;
-                }
             }
+
+            apiHost = cmdLine.getOptionValue("apiHost");
+            apiUser  = cmdLine.getOptionValue("apiUser");
+            apiPwd = cmdLine.getOptionValue("apiPwd");
 
             if (cmdLine.hasOption("rescueCbAddress")) {
                 rescueCbAddress = cmdLine.getOptionValue("rescueCbAddress");

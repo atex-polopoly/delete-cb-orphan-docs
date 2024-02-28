@@ -205,8 +205,8 @@ public class DeleteOrphans {
     JsonDocument response = null;
     try {
       response = bucket.get(id);
-    } catch (NoSuchElementException e) {
-      log.warning("No element with message: "
+    } catch (Exception e) {
+      log.warning("Failed to get " + id + " : "
           + e.getMessage());
       e.printStackTrace();
     }
